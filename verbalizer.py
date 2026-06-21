@@ -1,11 +1,15 @@
 """
 Etapa 2 — Verbaliza activaciones con el NLA Activation Verbalizer.
 
+Lee los metadatos producidos por inference.py (con estructura de cuartiles)
+y genera una explicación de texto por cada cuartil.
+Total: 30 prompts × 4 cuartiles = 120 llamadas al AV.
+
 Uso:
     python verbalizer.py \
-        --metadata_json  /ruta/a/activaciones/metadatos_activaciones.json \
+        --metadata_json  outputs/activaciones/metadatos_activaciones.json \
         --checkpoint_av  /ruta/a/checkpoints/nla_av \
-        --output_csv     /ruta/a/explicaciones_nla.csv \
+        --output_csv     outputs/explicaciones_nla.csv \
         [--load_in_8bit]
 """
 import argparse, csv, json, os, re
@@ -17,11 +21,11 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Verbaliza activaciones de Qwen usando el NLA Activation Verbalizer.")
-    p.add_argument("--metadata_json", required=True, help="Ruta a metadatos_activaciones.json (salida de inference.py)")
-    p.add_argument("--checkpoint_av", required=True, help="Ruta al directorio del checkpoint del NLA Verbalizer")
-    p.add_argument("--output_csv",    required=True, help="Ruta donde guardar el CSV de explicaciones")
-    p.add_argument("--load_in_8bit",  action="store_true", help="Cargar modelo en 8-bit (T4 / <20 GB VRAM)")
+    p = argparse.ArgumentParser()
+    p.add_argument("--metadata_json", required=True, help="Ruta a metadatos_activaciones.json")
+    p.add_argument("--checkpoint_av", required=True, help="Ruta al checkpoint del NLA Verbalizer")
+    p.add_argument("--output_csv",    required=True, help="Ruta del CSV de salida")
+    p.add_argument("--load_in_8bit",  action="store_true", help="Cargar modelo en 8-bit (T4)")
     return p.parse_args()
 
 
@@ -57,7 +61,7 @@ def load_av(checkpoint_av, load_in_8bit):
             device_map="auto", trust_remote_code=True,
         )
     model.eval()
-    dtype_emb  = torch.float16 if load_in_8bit else torch.bfloat16
+    dtype_emb   = torch.float16 if load_in_8bit else torch.bfloat16
     embed_layer = load_embedding(checkpoint_av, dtype_emb)
     print(f"✓ AV cargado. VRAM: {torch.cuda.memory_allocated()/1e9:.1f} GB")
     return tok, model, embed_layer
@@ -128,32 +132,41 @@ def run(args):
     verbalizar = make_verbalizer(tok, model, embed_layer, nla_meta, args.load_in_8bit)
 
     COLUMNAS = ["id", "lang", "grupo", "tema", "texto",
-                "senales_colombianas", "hipotesis_nla", "explicacion_nla"]
+                "senales_colombianas", "hipotesis_nla",
+                "cuartil", "token_idx", "explicacion_nla"]
+
+    total = len(metadatos) * 4
+    print(f"\nVerbalizando {len(metadatos)} prompts × 4 cuartiles = {total} llamadas al AV...\n")
 
     filas, errores = [], []
-    total = len(metadatos)
-    print(f"\nVerbalizando {total} activaciones...\n")
+    llamada = 0
 
-    for i, entrada in enumerate(metadatos):
+    for entrada in metadatos:
         pid, lang = entrada["id"], entrada["lang"]
-        print(f"[{i+1:3d}/{total}] {pid}_{lang} ...", end=" ", flush=True)
-        try:
-            v_raw = np.load(os.path.join(activations_dir, entrada["archivo_npy"]))
-            explicacion = verbalizar(v_raw)
-            filas.append({
-                "id":                  pid,
-                "lang":                lang,
-                "grupo":               entrada["grupo"],
-                "tema":                entrada["tema"],
-                "texto":               entrada["texto"],
-                "senales_colombianas": "|".join(entrada.get("senales_colombianas", [])),
-                "hipotesis_nla":       entrada.get("hipotesis_nla", ""),
-                "explicacion_nla":     explicacion,
-            })
-            print(f"✓  {explicacion[:70]}...")
-        except Exception as e:
-            errores.append({"id": pid, "lang": lang, "error": str(e)})
-            print(f"✗ ERROR: {e}")
+
+        for q_key, q_info in entrada["cuartiles"].items():
+            llamada += 1
+            print(f"[{llamada:3d}/{total}] {pid}_{lang}_{q_key} (tok {q_info['token_idx']}) ...",
+                  end=" ", flush=True)
+            try:
+                v_raw = np.load(os.path.join(activations_dir, q_info["archivo_npy"]))
+                explicacion = verbalizar(v_raw)
+                filas.append({
+                    "id":                  pid,
+                    "lang":                lang,
+                    "grupo":               entrada["grupo"],
+                    "tema":                entrada["tema"],
+                    "texto":               entrada["texto"],
+                    "senales_colombianas": "|".join(entrada.get("senales_colombianas", [])),
+                    "hipotesis_nla":       entrada.get("hipotesis_nla", ""),
+                    "cuartil":             q_key,
+                    "token_idx":           q_info["token_idx"],
+                    "explicacion_nla":     explicacion,
+                })
+                print(f"✓  {explicacion[:70]}...")
+            except Exception as e:
+                errores.append({"id": pid, "lang": lang, "cuartil": q_key, "error": str(e)})
+                print(f"✗ ERROR: {e}")
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output_csv)), exist_ok=True)
     with open(args.output_csv, "w", newline="", encoding="utf-8") as f:
