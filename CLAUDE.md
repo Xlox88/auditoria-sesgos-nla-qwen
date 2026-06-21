@@ -100,28 +100,27 @@ HACKATHON/
 ├── NLA_verbalizer_batch.ipynb         ← batch: lee metadatos, guarda explicaciones CSV
 ├── NLA_reconstructor_batch.ipynb      ← batch: puntúa explicaciones, guarda resultados CSV
 │
-└── repo/                              ← repositorio ejecutable (sin notebooks)
-    ├── CLAUDE.md                      ← (este mismo archivo vive aquí también)
-    ├── README.md
-    ├── requirements.txt
-    ├── inference.py                   ← Etapa 1: extrae activaciones
-    ├── verbalizer.py                  ← Etapa 2: verbaliza con el AV
-    ├── reconstructor.py               ← Etapa 3: puntúa con el AR
-    └── pipeline.py                    ← ejecuta las 3 etapas en secuencia
+├── inference.py                       ← Etapa 1: extrae activaciones
+├── verbalizer.py                      ← Etapa 2: verbaliza con el AV
+├── analyzer.py                        ← Etapa 3: detecta sesgos con Claude Sonnet
+├── pipeline.py                        ← ejecuta las 3 etapas en secuencia
+├── requirements.txt
+│
+└── repo/                              ← directorio reservado (vacío por ahora)
 ```
 
 ---
 
-## Pipeline (repo/)
+## Pipeline
 
 ```
 prompts_espanol_ingles*.json
         ↓
-  [inference.py]  →  activaciones/{id}_{lang}.npy  +  metadatos_activaciones.json
+  [inference.py]  →  activaciones/{id}_{lang}_q{1-4}.npy  +  metadatos_activaciones.json
         ↓
-  [verbalizer.py]  →  explicaciones_nla.csv
+  [verbalizer.py]  →  explicaciones_nla.csv   (30 prompts × 2 idiomas × 4 cuartiles = 240 filas)
         ↓
-  [reconstructor.py]  →  resultados_nla.csv
+  [analyzer.py]   →  resultados_nla.csv        (Claude Sonnet detecta sesgos implícitos)
 ```
 
 Comando para correr el pipeline completo (hacer para batch 1 y batch 2):
@@ -130,12 +129,16 @@ python pipeline.py \
     --prompts_json   prompts_espanol_ingles.json \
     --checkpoint     /ruta/qwen_sujeto \
     --checkpoint_av  /ruta/nla_av \
-    --checkpoint_ar  /ruta/nla_ar \
     --output_dir     ./salida/batch1 \
-    --load_in_8bit
+    --load_in_8bit \
+    --api_key        $ANTHROPIC_API_KEY
 ```
 
-Salida final (`resultados_nla.csv`) tiene columnas: `id, lang, grupo, tema, texto, senales_colombianas, hipotesis_nla, explicacion_nla, cos_sim, mse, fidelidad`.
+Si `--api_key` se omite, la etapa 3 imprime los prompts de análisis para revisión manual en Claude.ai.
+
+Salida final (`resultados_nla.csv`) tiene columnas: `id, lang, grupo, tema, senales_colombianas, categoria, cuartil_primera_aparicion, cita_textual`.
+
+Categorías detectadas por `analyzer.py`: `idioma`, `nacionalidad`, `nivel_socioeconomico`, `intencion`. Filas sin sesgos detectados tienen `categoria="ninguna"`.
 
 ---
 
@@ -145,12 +148,12 @@ Salida final (`resultados_nla.csv`) tiene columnas: `id, lang, grupo, tema, text
 - [x] Entorno Colab validado con prompt único en inglés (notebooks originales)
 - [x] Notebooks batch: inferencia, verbalizer, reconstructor
 - [x] Dataset de 180 prompts pareados ES/EN en dos batches
-- [x] Repositorio CLI (`repo/`) con los 4 scripts y README en español
+- [x] Scripts CLI: `inference.py`, `verbalizer.py`, `pipeline.py`
+- [x] `analyzer.py` — Etapa 3 con Claude Sonnet: detecta sesgos por cuartil, modo manual si sin API key
 
 ### Pendiente
 - [ ] **Correr el pipeline en Colab** sobre los 360 pares (180 prompts × 2 idiomas) — produce `resultados_nla.csv`
-- [ ] **Análisis de resultados**: string matching sobre `explicacion_nla` buscando menciones a idioma, nacionalidad, nivel socioeconómico; comparar frecuencias por grupo (A vs B vs C) y por idioma (ES vs EN)
-- [ ] **Reporte final**: 4–8 páginas con ejemplos concretos, cuantificación de frecuencias y recomendaciones
+- [ ] **Reporte final**: 4–8 páginas con ejemplos concretos, frecuencias por grupo (A vs B vs C) e idioma (ES vs EN), y recomendaciones
 
 ---
 
